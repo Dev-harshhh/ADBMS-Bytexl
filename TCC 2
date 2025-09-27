@@ -1,0 +1,102 @@
+-- Practice 2 - Transactions & Concurrency Control
+-- Run this in MySQL 8+ (InnoDB). Follow the Session comments for concurrency steps.
+
+-- CLEANUP
+DROP TABLE IF EXISTS StudentEnrollments;
+
+-- TABLE CREATION
+CREATE TABLE StudentEnrollments (
+    enrollment_id INT PRIMARY KEY AUTO_INCREMENT,
+    student_name VARCHAR(100) NOT NULL,
+    course_id VARCHAR(10) NOT NULL,
+    enrollment_date DATE NOT NULL,
+    UNIQUE KEY ux_student_course (student_name, course_id)
+) ENGINE=InnoDB;
+
+-- Insert sample rows (baseline)
+START TRANSACTION;
+INSERT INTO StudentEnrollments (student_name, course_id, enrollment_date)
+VALUES
+  ('Ashish', 'CSE101', '2024-07-01'),
+  ('Smaran', 'CSE102', '2024-07-01'),
+  ('Vaibhav', 'CSE101', '2024-07-01');
+COMMIT;
+
+SELECT 'BASE STATE' AS info;
+SELECT * FROM StudentEnrollments ORDER BY enrollment_id;
+
+-- ======================
+-- PART A: Prevent duplicate enrollments using unique constraint
+-- Demonstrate: only one insert for (student_name, course_id) allowed.
+-- NOTE: To simulate 2 concurrent users, do the "concurrent attempt" in a second session
+-- ======================
+
+-- Primary successful insert (already done in baseline above for Ashish/CSE101).
+-- Now: show what happens if someone tries to insert the same pair again (will error).
+-- Run the following in any session to see the constraint violation:
+--   INSERT INTO StudentEnrollments (student_name, course_id, enrollment_date)
+--   VALUES ('Ashish','CSE101','2024-07-02');
+-- This should fail with a duplicate-key error (ER_DUP_ENTRY).
+
+-- If you *intentionally* want to avoid aborting the script, you can use INSERT IGNORE or
+-- ON DUPLICATE KEY UPDATE – but that is NOT what the question asks. The question expects a
+-- constraint violation for the second concurrent attempt.
+
+-- For demonstration (non-blocking, showing the error), run:
+-- Uncomment the next lines to test the duplicate insertion (it WILL raise an error).
+-- START TRANSACTION;
+-- INSERT INTO StudentEnrollments (student_name, course_id, enrollment_date)
+-- VALUES ('Ashish','CSE101','2024-07-02');
+-- COMMIT;
+
+-- ======================
+-- PART B: SELECT FOR UPDATE to lock a student record
+-- Must be done using TWO separate sessions/clients connected to the DB.
+-- Instructions below show exactly what to run in Session A and Session B.
+-- ======================
+
+-- Session A (in a client window):
+-- 1) START TRANSACTION;
+-- 2) SELECT * FROM StudentEnrollments
+--      WHERE student_name='Ashish' AND course_id='CSE101'
+--      FOR UPDATE;
+--    (This locks the target row. Do NOT COMMIT yet.)
+-- 3) Now keep this transaction open while you switch to Session B.
+
+-- Session B (in a second client window while Session A's transaction is still open):
+-- 1) START TRANSACTION;
+-- 2) Try to UPDATE the same row:
+--       UPDATE StudentEnrollments
+--       SET enrollment_date = '2024-07-02'
+--       WHERE student_name='Ashish' AND course_id='CSE101';
+--    -> This UPDATE will be blocked (it will wait) until Session A COMMITs or ROLLBACKs.
+-- 3) If you try SELECT ... FOR UPDATE in Session B it will wait too.
+-- After Session A COMMIT/ROLLBACK, Session B's UPDATE will proceed (or error/complete depending).
+
+-- Example timeline to try manually:
+-- Session A:
+--   START TRANSACTION;
+--   SELECT * FROM StudentEnrollments WHERE student_name='Ashish' AND course_id='CSE101' FOR UPDATE;
+--   -- (keep transaction open)
+-- Session B:
+--   START TRANSACTION;
+--   UPDATE StudentEnrollments SET enrollment_date='2024-07-02'
+--     WHERE student_name='Ashish' AND course_id='CSE101';
+--   -- this will block until Session A commits or rollbacks
+-- Session A:
+--   COMMIT;  -- releasing the lock
+-- Session B:
+--   -- Now the UPDATE will complete; then COMMIT in Session B.
+
+-- ======================
+-- PART C: Demonstrate locking preserves consistency
+-- Use the same two-session approach to serialize conflicting updates.
+-- Example scenario:
+--  - Session A locks and sets date to 2024-07-05 and commits.
+--  - Session B (which attempted to set date to 2024-07-10 while blocked) will run after A, and its final committed value will be whatever B sets (serialization).
+-- The important point: locks prevent partial-overwrite races; operations are serialized.
+-- ======================
+
+-- Below are non-concurrent statements that show correctness of table after previous steps:
+SELECT 'FINAL CHECK' AS info;
+SELECT * FROM StudentEnrollments ORDER BY enrollment_id;
